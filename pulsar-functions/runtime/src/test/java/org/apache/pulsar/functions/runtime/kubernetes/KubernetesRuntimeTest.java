@@ -60,6 +60,7 @@ import static org.powermock.api.mockito.PowerMockito.spy;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertThrows;
+import static org.testng.Assert.assertTrue;
 
 /**
  * Unit test of {@link ThreadRuntime}.
@@ -254,6 +255,13 @@ public class KubernetesRuntimeTest {
         return customize.apply(functionDetailsBuilder).build();
     }
 
+    InstanceConfig createJavaInstanceConfig(FunctionDetails.Runtime runtime, boolean addSecrets,
+                                            boolean exposePulsarAdminClientEnabled) {
+        InstanceConfig config = createJavaInstanceConfig(runtime, addSecrets);
+        config.setExposePulsarAdminClientEnabled(exposePulsarAdminClientEnabled);
+        return config;
+    }
+
     InstanceConfig createJavaInstanceConfig(FunctionDetails.Runtime runtime, boolean addSecrets) {
         InstanceConfig config = new InstanceConfig();
 
@@ -375,9 +383,16 @@ public class KubernetesRuntimeTest {
         if (secretsAttached) {
             totalArgs += 4;
         }
+        if (config.isExposePulsarAdminClientEnabled()) {
+            totalArgs += 2;
+            portArg += 2;
+            metricsPortArg += 2;
+        }
 
         assertEquals(args.size(), totalArgs,
                 "Actual args : " + StringUtils.join(args, " "));
+
+        String pulsarAdminArg = config.isExposePulsarAdminClientEnabled() ? " --web_serviceurl " + pulsarAdminUrl : "";
 
         String expectedArgs = "exec java -cp " + classpath
                 + extraDepsEnv
@@ -392,6 +407,7 @@ public class KubernetesRuntimeTest {
                 + " --function_version " + config.getFunctionVersion()
                 + " --function_details '" + JsonFormat.printer().omittingInsignificantWhitespace().print(config.getFunctionDetails())
                 + "' --pulsar_serviceurl " + pulsarServiceUrl
+                + pulsarAdminArg
                 + " --max_buffered_tuples 1024 --port " + args.get(portArg) + " --metrics_port " + args.get(metricsPortArg)
                 + " --state_storage_serviceurl " + stateStorageServiceUrl
                 + " --expected_healthcheck_interval -1";
@@ -760,6 +776,24 @@ public class KubernetesRuntimeTest {
         assertEquals(spec.getSpec().getTemplate().getSpec().getServiceAccountName(), "my-service-account");
     }
 
+    @Test
+    public void testCustomKubernetesDownloadCommands() throws Exception {
+        InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.JAVA, false);
+        config.setFunctionDetails(createFunctionDetails(FunctionDetails.Runtime.JAVA, false, (fb) -> {
+            return fb.setPackageUrl("function://public/default/test@v1");
+        }));
+
+        factory = createKubernetesRuntimeFactory(null, 10, 1.0, 1.0);
+
+        verifyJavaInstance(config, pulsarRootDir + "/instances/deps", false);
+        KubernetesRuntime container = factory.createContainer(config, userJarFile, userJarFile, 30l);
+        V1StatefulSet spec = container.createStatefulSet();
+        String expectedDownloadCommand = "pulsar-admin --admin-url http://localhost:8080 packages download "
+            + "function://public/default/test@v1 --path " + pulsarRootDir + "/" + userJarFile;
+        String containerCommand = spec.getSpec().getTemplate().getSpec().getContainers().get(0).getCommand().get(2);
+        assertTrue(containerCommand.contains(expectedDownloadCommand));
+    }
+
     InstanceConfig createGolangInstanceConfig() {
         InstanceConfig config = new InstanceConfig();
 
@@ -830,6 +864,7 @@ public class KubernetesRuntimeTest {
         assertEquals(goInstanceConfig.get("name"), TEST_NAME);
         assertEquals(goInstanceConfig.get("expectedHealthCheckInterval"), 0);
         assertEquals(goInstanceConfig.get("deadLetterTopic"), "");
+        assertEquals(goInstanceConfig.get("metricsPort"), 4331);
 
         // check padding and xmx
         V1Container containerSpec = container.getFunctionContainer(Collections.emptyList(), RESOURCES);
@@ -841,4 +876,21 @@ public class KubernetesRuntimeTest {
         assertEquals(containerSpec.getResources().getLimits().get("cpu").getNumber().doubleValue(), RESOURCES.getCpu());
     }
 
+    @Test
+    public void testKubernetesRuntimeWithExposeAdminClientEnabled() throws Exception {
+        InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.JAVA, false, true);
+
+        factory = createKubernetesRuntimeFactory(null, 10, 1.0, 1.0);
+
+        verifyJavaInstance(config, pulsarRootDir + "/instances/deps", false);
+    }
+
+    @Test
+    public void testKubernetesRuntimeWithExposeAdminClientDisabled() throws Exception {
+        InstanceConfig config = createJavaInstanceConfig(FunctionDetails.Runtime.JAVA, false, false);
+
+        factory = createKubernetesRuntimeFactory(null, 10, 1.0, 1.0);
+
+        verifyJavaInstance(config, pulsarRootDir + "/instances/deps", false);
+    }
 }

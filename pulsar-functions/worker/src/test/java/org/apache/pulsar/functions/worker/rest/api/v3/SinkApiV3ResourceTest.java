@@ -24,10 +24,12 @@ import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.core.config.Configurator;
 import org.apache.pulsar.client.admin.Functions;
 import org.apache.pulsar.client.admin.Namespaces;
+import org.apache.pulsar.client.admin.Packages;
 import org.apache.pulsar.client.admin.PulsarAdmin;
 import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.client.admin.Tenants;
 import org.apache.pulsar.common.functions.FunctionConfig;
+import org.apache.pulsar.common.functions.Utils;
 import org.apache.pulsar.common.io.SinkConfig;
 import org.apache.pulsar.common.nar.NarClassLoader;
 import org.apache.pulsar.common.policies.data.TenantInfo;
@@ -78,6 +80,7 @@ import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
 import static org.powermock.api.mockito.PowerMockito.doNothing;
 import static org.powermock.api.mockito.PowerMockito.doReturn;
@@ -129,6 +132,7 @@ public class SinkApiV3ResourceTest {
     private FormDataContentDisposition mockedFormData;
     private FunctionMetaData mockedFunctionMetaData;
     private LeaderService mockedLeaderService;
+    private Packages mockedPackages;
 
     @BeforeMethod
     public void setup() throws Exception {
@@ -145,6 +149,7 @@ public class SinkApiV3ResourceTest {
         this.mockedNamespaces = mock(Namespaces.class);
         this.mockedFunctions = mock(Functions.class);
         this.mockedLeaderService = mock(LeaderService.class);
+        this.mockedPackages = mock(Packages.class);
         namespaceList.add(tenant + "/" + namespace);
 
         this.mockedWorkerService = mock(PulsarWorkerService.class);
@@ -159,9 +164,11 @@ public class SinkApiV3ResourceTest {
         when(mockedPulsarAdmin.tenants()).thenReturn(mockedTenants);
         when(mockedPulsarAdmin.namespaces()).thenReturn(mockedNamespaces);
         when(mockedPulsarAdmin.functions()).thenReturn(mockedFunctions);
+        when(mockedPulsarAdmin.packages()).thenReturn(mockedPackages);
         when(mockedTenants.getTenantInfo(any())).thenReturn(mockedTenantInfo);
         when(mockedNamespaces.getNamespaces(any())).thenReturn(namespaceList);
         when(mockedLeaderService.isLeader()).thenReturn(true);
+        doNothing().when(mockedPackages).download(anyString(), anyString());
 
         URL file = Thread.currentThread().getContextClassLoader().getResource(JAR_FILE_NAME);
         if (file == null)  {
@@ -482,6 +489,10 @@ public class SinkApiV3ResourceTest {
     }
 
     private void registerDefaultSink() throws IOException {
+        registerDefaultSinkWithPackageUrl(null);
+    }
+
+    private void registerDefaultSinkWithPackageUrl(String packageUrl) throws IOException {
         SinkConfig sinkConfig = createDefaultSinkConfig();
         resource.registerSink(
             tenant,
@@ -489,7 +500,7 @@ public class SinkApiV3ResourceTest {
                 sink,
                 new FileInputStream(JAR_FILE_PATH),
             mockedFormData,
-            null,
+            packageUrl,
             sinkConfig,
                 null, null);
     }
@@ -627,6 +638,23 @@ public class SinkApiV3ResourceTest {
         } catch (RestException re){
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.INTERNAL_SERVER_ERROR);
             throw re;
+        }
+    }
+
+    @Test(timeOut = 20000)
+    public void testRegisterSinkSuccessWithPackageName() throws IOException {
+        registerDefaultSinkWithPackageUrl("sink://public/default/test@v1");
+    }
+
+    @Test(timeOut = 20000)
+    public void testRegisterSinkFailedWithWrongPackageName() throws PulsarAdminException, IOException {
+        try {
+            doThrow(new PulsarAdminException("package name is invalid"))
+                .when(mockedPackages).download(anyString(), anyString());
+            registerDefaultSinkWithPackageUrl("function://");
+        } catch (RestException e) {
+            // expected exception
+            assertEquals(e.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
         }
     }
 
@@ -860,6 +888,10 @@ public class SinkApiV3ResourceTest {
     }
 
     private void updateDefaultSink() throws Exception {
+        updateDefaultSinkWithPackageUrl(null);
+    }
+
+    private void updateDefaultSinkWithPackageUrl(String packageUrl) throws Exception {
         SinkConfig sinkConfig = new SinkConfig();
         sinkConfig.setTenant(tenant);
         sinkConfig.setNamespace(namespace);
@@ -896,7 +928,7 @@ public class SinkApiV3ResourceTest {
                 sink,
                 new FileInputStream(JAR_FILE_PATH),
             mockedFormData,
-            null,
+            packageUrl,
             sinkConfig,
                 null, null, null);
     }
@@ -1014,6 +1046,25 @@ public class SinkApiV3ResourceTest {
         } catch (RestException re) {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
             throw re;
+        }
+    }
+
+    @Test(timeOut = 20000)
+    public void testUpdateSinkSuccessWithPackageName() throws Exception {
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+        updateDefaultSinkWithPackageUrl("function://public/default/test@v1");
+    }
+
+    @Test(timeOut = 20000)
+    public void testUpdateSinkFailedWithWrongPackageName() throws Exception {
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+        try {
+            doThrow(new PulsarAdminException("package name is invalid"))
+                .when(mockedPackages).download(anyString(), anyString());
+            updateDefaultSinkWithPackageUrl("function://");
+        } catch (RestException e) {
+            // expected exception
+            assertEquals(e.getResponse().getStatusInfo(), Response.Status.BAD_REQUEST);
         }
     }
 
@@ -1155,6 +1206,81 @@ public class SinkApiV3ResourceTest {
             assertEquals(re.getResponse().getStatusInfo(), Response.Status.INTERNAL_SERVER_ERROR);
             throw re;
         }
+    }
+
+    @Test
+    public void testDeregisterSinkBKPackageCleanup() throws IOException {
+
+        mockStatic(WorkerUtils.class);
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+        String packagePath = "public/default/test/591541f0-c7c5-40c0-983b-610c722f90b0-pulsar-io-batch-data-generator-2.7.0.nar";
+        when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                .thenReturn(FunctionMetaData.newBuilder().setPackageLocation(
+                        Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath).build()).build());
+
+        deregisterDefaultSink();
+
+        PowerMockito.verifyStatic(WorkerUtils.class, times(1));
+        WorkerUtils.deleteFromBookkeeper(any(), eq(packagePath));
+    }
+
+    @Test
+    public void testDeregisterBuiltinSinkBKPackageCleanup() throws IOException {
+
+        mockStatic(WorkerUtils.class);
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+        String packagePath = String.format("%s://data-generator", Utils.BUILTIN);
+        when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                .thenReturn(FunctionMetaData.newBuilder().setPackageLocation(
+                        Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath).build()).build());
+
+        deregisterDefaultSink();
+
+        // if the sink is a builtin sink we shouldn't try to clean it up
+        PowerMockito.verifyStatic(WorkerUtils.class, times(0));
+        WorkerUtils.deleteFromBookkeeper(any(), eq(packagePath));
+    }
+
+    @Test
+    public void testDeregisterHTTPSinkBKPackageCleanup() throws IOException {
+
+        mockStatic(WorkerUtils.class);
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+        String packagePath = String.format("http://foo.com/connector.jar", Utils.BUILTIN);
+        when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                .thenReturn(FunctionMetaData.newBuilder().setPackageLocation(
+                        Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath).build()).build());
+
+        deregisterDefaultSink();
+
+        // if the sink is a is download from a http url, we shouldn't try to clean it up
+        PowerMockito.verifyStatic(WorkerUtils.class, times(0));
+        WorkerUtils.deleteFromBookkeeper(any(), eq(packagePath));
+    }
+
+    @Test
+    public void testDeregisterFileSinkBKPackageCleanup() throws IOException {
+
+        mockStatic(WorkerUtils.class);
+
+        when(mockedManager.containsFunction(eq(tenant), eq(namespace), eq(sink))).thenReturn(true);
+
+        String packagePath = String.format("file://foo/connector.jar", Utils.BUILTIN);
+        when(mockedManager.getFunctionMetaData(eq(tenant), eq(namespace), eq(sink)))
+                .thenReturn(FunctionMetaData.newBuilder().setPackageLocation(
+                        Function.PackageLocationMetaData.newBuilder().setPackagePath(packagePath).build()).build());
+
+        deregisterDefaultSink();
+
+        // if the sink package has a file url, we shouldn't try to clean it up
+        PowerMockito.verifyStatic(WorkerUtils.class, times(0));
+        WorkerUtils.deleteFromBookkeeper(any(), eq(packagePath));
     }
 
     //

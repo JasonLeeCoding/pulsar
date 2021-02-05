@@ -400,6 +400,19 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
     	return tlsEnabled || workerPortTls != null;
     }
 
+    @FieldContext(
+            category = CATEGORY_WORKER,
+            doc = "Whether to initialize distributed log metadata in runtime"
+    )
+    private Boolean initializedDlogMetadata = false;
+
+    public Boolean isInitializedDlogMetadata() {
+        if (this.initializedDlogMetadata == null){
+            return false;
+        }
+        return this.initializedDlogMetadata;
+    };
+
     /******** security settings for pulsar broker client **********/
 
     @FieldContext(
@@ -513,6 +526,12 @@ public class WorkerConfig implements Serializable, PulsarConfiguration {
         doc = "The nar package for the function worker service"
     )
     private String functionsWorkerServiceNarPackage = "";
+
+    @FieldContext(
+            category = CATEGORY_WORKER,
+            doc = "Enable to expose Pulsar Admin Client from Function Context, default is disabled"
+    )
+    private boolean exposeAdminClientEnabled = false;
 
     public static WorkerConfig load(String yamlFile) throws IOException {
         if (isBlank(yamlFile)) {

@@ -63,6 +63,7 @@ import org.apache.pulsar.common.naming.TopicName;
 import org.apache.pulsar.common.partition.PartitionedTopicMetadata;
 import org.apache.pulsar.common.policies.data.AuthAction;
 import org.apache.pulsar.common.policies.data.ClusterData;
+import org.apache.pulsar.common.policies.data.Policies;
 import org.apache.pulsar.common.policies.data.TenantInfo;
 import org.apache.pulsar.zookeeper.ZooKeeperManagedLedgerCache;
 import org.apache.zookeeper.KeeperException;
@@ -101,7 +102,7 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         persistentTopics = spy(new PersistentTopics());
         persistentTopics.setServletContext(new MockServletContext());
         persistentTopics.setPulsar(pulsar);
-        doReturn(mockZooKeeper).when(persistentTopics).globalZk();
+        doReturn(mockZooKeeperGlobal).when(persistentTopics).globalZk();
         doReturn(mockZooKeeper).when(persistentTopics).localZk();
         doReturn(pulsar.getConfigurationCache().propertiesCache()).when(persistentTopics).tenantsCache();
         doReturn(pulsar.getConfigurationCache().policiesCache()).when(persistentTopics).policiesCache();
@@ -115,7 +116,7 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         nonPersistentTopic = spy(new NonPersistentTopics());
         nonPersistentTopic.setServletContext(new MockServletContext());
         nonPersistentTopic.setPulsar(pulsar);
-        doReturn(mockZooKeeper).when(nonPersistentTopic).globalZk();
+        doReturn(mockZooKeeperGlobal).when(nonPersistentTopic).globalZk();
         doReturn(mockZooKeeper).when(nonPersistentTopic).localZk();
         doReturn(pulsar.getConfigurationCache().propertiesCache()).when(nonPersistentTopic).tenantsCache();
         doReturn(pulsar.getConfigurationCache().policiesCache()).when(nonPersistentTopic).policiesCache();
@@ -265,6 +266,10 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         Assert.assertEquals(persistentTopics
                         .getPartitionedMetadata(testTenant, testNamespace, nonPartitionTopic, true, false).partitions,
                 0);
+
+        Assert.assertEquals(persistentTopics
+                        .getPartitionedMetadata(testTenant, testNamespace, nonPartitionTopic, true, true).partitions,
+                0);
     }
 
     @Test
@@ -274,6 +279,10 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         PartitionedTopicMetadata pMetadata = persistentTopics.getPartitionedMetadata(
                 testTenant, testNamespace, topicName, true, false);
         Assert.assertEquals(pMetadata.partitions, 0);
+
+        PartitionedTopicMetadata metadata = persistentTopics.getPartitionedMetadata(
+                testTenant, testNamespace, topicName, true, true);
+        Assert.assertEquals(metadata.partitions, 0);
     }
 
     @Test(expectedExceptions = RestException.class)
@@ -299,6 +308,7 @@ public class PersistentTopicsTest extends MockedPulsarServiceBaseTest {
         doReturn(mockZooKeeperChildrenCache).when(mockLocalZooKeeperCacheService).managedLedgerListCache();
         doReturn(ImmutableSet.of(nonPartitionTopicName1, nonPartitionTopicName2)).when(mockZooKeeperChildrenCache).get(anyString());
         doReturn(CompletableFuture.completedFuture(ImmutableSet.of(nonPartitionTopicName1, nonPartitionTopicName2))).when(mockZooKeeperChildrenCache).getAsync(anyString());
+        doReturn(new Policies()).when(persistentTopics).getNamespacePolicies(any());
         AsyncResponse response = mock(AsyncResponse.class);
         ArgumentCaptor<RestException> errCaptor = ArgumentCaptor.forClass(RestException.class);
         persistentTopics.createPartitionedTopic(response, testTenant, testNamespace, partitionedTopicName, 5);
